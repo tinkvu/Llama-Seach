@@ -13,10 +13,9 @@ class SearchValidationSystem:
         self.groq_client = Groq(api_key=groq_api_key)
         self.search_results_cache = {}
 
-    # [Previous SearchValidationSystem methods remain the same]
     def fetch_duckduckgo_lite_results(self, query: str, num_results: int = 5) -> List[Dict]:
         """Fetch search results from DuckDuckGo Lite."""
-        url = "https://lite.duckduckgo.com/lite"
+        url = "https://lite.duckduckgo.com/lite/"
         results = []
         
         headers = {
@@ -25,29 +24,83 @@ class SearchValidationSystem:
 
         try:
             with st.spinner('Fetching search results...'):
-                response = requests.post(url, headers=headers, data={'q': query})
+                # Send POST request with search query
+                response = requests.post(url, headers=headers, data={
+                    'q': query,
+                    'kl': 'us-en'  # Set region and language
+                })
                 response.raise_for_status()
+                
+                # Parse the response
                 soup = BeautifulSoup(response.text, 'html.parser')
-                links = soup.find_all('a', limit=num_results)
+                
+                # Find all table rows that contain search results
+                result_tables = soup.find_all('table', {'class': 'result-table'})
                 
                 progress_bar = st.progress(0)
-                for i, link in enumerate(links):
-                    title = link.get_text(strip=True)
-                    result_url = link.get('href')
+                result_count = 0
+                
+                for table in result_tables:
+                    if result_count >= num_results:
+                        break
+                        
+                    # Extract link and snippet
+                    link_cell = table.find('td', {'class': 'result-link'})
+                    snippet_cell = table.find('td', {'class': 'result-snippet'})
                     
-                    if result_url and title:
-                        content = self._fetch_page_content(result_url)
-                        results.append({
-                            'url': result_url,
-                            'title': title,
-                            'description': content[:150] + "...",
-                            'timestamp': datetime.now().isoformat()
-                        })
-                    progress_bar.progress((i + 1) / len(links))
-                    time.sleep(1)
+                    if link_cell and snippet_cell:
+                        link = link_cell.find('a')
+                        if link:
+                            url = link.get('href')
+                            title = link.get_text(strip=True)
+                            snippet = snippet_cell.get_text(strip=True)
+                            
+                            if url and title:
+                                # Fetch detailed content
+                                content = self._fetch_page_content(url)
+                                results.append({
+                                    'url': url,
+                                    'title': title,
+                                    'description': snippet or content[:150] + "...",
+                                    'content': content,
+                                    'timestamp': datetime.now().isoformat()
+                                })
+                                result_count += 1
+                                progress_bar.progress(result_count / num_results)
+                                time.sleep(1)  # Polite delay between requests
 
         except Exception as e:
-            st.error(f"Error in DuckDuckGo Lite search: {e}")
+            st.error(f"Error in DuckDuckGo Lite search: {str(e)}")
+            
+        if not results:
+            # Fallback to direct web scraping
+            try:
+                fallback_url = f"https://html.duckduckgo.com/html/?q={query}"
+                response = requests.get(fallback_url, headers=headers)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Find results in the fallback HTML
+                for result in soup.find_all('div', {'class': 'result'})[:num_results]:
+                    link = result.find('a', {'class': 'result__a'})
+                    snippet = result.find('a', {'class': 'result__snippet'})
+                    
+                    if link:
+                        url = link.get('href')
+                        title = link.get_text(strip=True)
+                        description = snippet.get_text(strip=True) if snippet else ""
+                        
+                        # Fetch detailed content
+                        content = self._fetch_page_content(url)
+                        results.append({
+                            'url': url,
+                            'title': title,
+                            'description': description or content[:150] + "...",
+                            'content': content,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        
+            except Exception as e:
+                st.error(f"Error in fallback search: {str(e)}")
 
         return results
 
@@ -55,33 +108,49 @@ class SearchValidationSystem:
         """Fetch and parse content from a webpage."""
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1"
             }
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, timeout=10, verify=False)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
-            for element in soup(['script', 'style', 'nav', 'footer', 'header']):
+            
+            # Remove unwanted elements
+            for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
                 element.decompose()
 
-            main_content = soup.find('main') or soup.find('article') or soup.find('body')
+            # Try to find the main content
+            main_content = (
+                soup.find('main') or 
+                soup.find('article') or 
+                soup.find('div', {'class': ['content', 'main', 'article', 'post']}) or 
+                soup.find('body')
+            )
+
             if main_content:
+                # Get text while preserving some structure
                 paragraphs = main_content.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
                 content = ' '.join(p.get_text(strip=True) for p in paragraphs)
-                return content[:5000]
+                return content[:5000]  # Limit content length
             return ""
 
         except Exception as e:
-            st.warning(f"Error fetching content from {url}: {e}")
+            st.warning(f"Error fetching content from {url}: {str(e)}")
             return ""
 
+    # [Rest of the class methods remain the same]
     def validate_with_llama(self, query: str, search_results: List[Dict]) -> Dict:
         """Validate search results using LLaMA through Groq."""
         if not search_results:
             return {"error": "No valid search results to analyze"}
 
         context = "\n".join([
-            f"Source {i+1} ({result['url']}):\nTitle: {result['title']}\nDescription: {result['description']}\nContent: {result['description'][:200]}..."
+            f"Source {i+1} ({result['url']}):\nTitle: {result['title']}\nDescription: {result['description']}\nContent: {result.get('content', '')[:200]}..."
             for i, result in enumerate(search_results)
         ])
 
@@ -140,7 +209,7 @@ class SearchValidationSystem:
                     }
 
         except Exception as e:
-            st.error(f"Error in LLaMA validation: {e}")
+            st.error(f"Error in LLaMA validation: {str(e)}")
             return {
                 "summary": "Error in validation process",
                 "validation": str(e),
@@ -198,53 +267,56 @@ def main():
     # Main interface
     query = st.text_input("Enter your search query:", key="search_query")
 
-    if query and groq_api_key:
-        system = SearchValidationSystem(groq_api_key)
-        
-        try:
-            results = system.search_and_validate(query)
+    if st.button("Search and Validate"):
+        if query and groq_api_key:
+            system = SearchValidationSystem(groq_api_key)
             
-            if "error" in results:
-                st.error(f"Error: {results['error']}")
-            else:
-                # Display results in tabs
-                tab1, tab2 = st.tabs(["Search Results", "Validation"])
+            try:
+                results = system.search_and_validate(query)
                 
-                with tab1:
-                    st.subheader("Search Results")
-                    for i, result in enumerate(results['search_results'], 1):
-                        with st.expander(f"{i}. {result['title']}", expanded=True):
-                            st.write(f"**URL:** {result['url']}")
-                            st.write(f"**Description:** {result['description']}")
-                            st.write(f"**Timestamp:** {result['timestamp']}")
-                
-                with tab2:
-                    st.subheader("Validation Results")
-                    validation = results['validation']
-                    if 'error' in validation:
-                        st.error(f"Validation Error: {validation['error']}")
-                    else:
-                        st.markdown("### Summary")
-                        st.write(validation['summary'])
-                        
-                        st.markdown("### Validation Details")
-                        st.write(validation['validation'])
-                        
-                        if validation['inconsistencies']:
-                            st.markdown("### Inconsistencies Found")
-                            for inconsistency in validation['inconsistencies']:
-                                st.warning(f"- {inconsistency}")
-                        
-                        if validation['references']:
-                            st.markdown("### References")
-                            for ref in validation['references']:
-                                st.markdown(f"- {ref}")
+                if "error" in results:
+                    st.error(f"Error: {results['error']}")
+                else:
+                    # Display results in tabs
+                    tab1, tab2 = st.tabs(["Search Results", "Validation"])
+                    
+                    with tab1:
+                        st.subheader("Search Results")
+                        for i, result in enumerate(results['search_results'], 1):
+                            with st.expander(f"{i}. {result['title']}", expanded=True):
+                                st.write(f"**URL:** {result['url']}")
+                                st.write(f"**Description:** {result['description']}")
+                                st.write(f"**Timestamp:** {result['timestamp']}")
+                    
+                    with tab2:
+                        st.subheader("Validation Results")
+                        validation = results['validation']
+                        if 'error' in validation:
+                            st.error(f"Validation Error: {validation['error']}")
+                        else:
+                            st.markdown("### Summary")
+                            st.write(validation['summary'])
+                            
+                            st.markdown("### Validation Details")
+                            st.write(validation['validation'])
+                            
+                            if validation['inconsistencies']:
+                                st.markdown("### Inconsistencies Found")
+                                for inconsistency in validation['inconsistencies']:
+                                    st.warning(f"- {inconsistency}")
+                            
+                            if validation['references']:
+                                st.markdown("### References")
+                                for ref in validation['references']:
+                                    st.markdown(f"- {ref}")
 
-        except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
-    
-    elif query:
-        st.warning("Please enter your Groq API key in the sidebar to proceed.")
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+        
+        elif not groq_api_key:
+            st.warning("Please enter your Groq API key in the sidebar to proceed.")
+        else:
+            st.warning("Please enter a search query.")
     
     st.markdown("---")
     st.markdown("Made with ❤️ using Streamlit, DuckDuckGo, and LLaMA")
