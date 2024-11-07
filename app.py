@@ -8,50 +8,46 @@ from typing import List, Dict
 from groq import Groq
 
 class SearchValidationSystem:
-    def __init__(self):
-        """Initialize the system with Groq API key directly."""
-        self.groq_client = Groq(api_key="YOUR_GROQ_API_KEY")  # Replace with your Groq API key
+    def __init__(self, groq_api_key: str):
+        """Initialize the system with Groq API key."""
+        self.groq_client = Groq(api_key=groq_api_key)
         self.search_results_cache = {}
 
+    # [Previous SearchValidationSystem methods remain the same]
     def fetch_duckduckgo_lite_results(self, query: str, num_results: int = 5) -> List[Dict]:
         """Fetch search results from DuckDuckGo Lite."""
         url = "https://lite.duckduckgo.com/lite"
         results = []
         
-        # Setting headers to simulate a browser request
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
 
         try:
-            # Submit the search form
-            response = requests.post(url, headers=headers, data={'q': query})
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            # Locate search result elements
-            links = soup.find_all('a', limit=num_results)
-            
-            for link in links:
-                title = link.get_text(strip=True)
-                result_url = link.get('href')
+            with st.spinner('Fetching search results...'):
+                response = requests.post(url, headers=headers, data={'q': query})
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, 'html.parser')
+                links = soup.find_all('a', limit=num_results)
                 
-                # Only add valid links
-                if result_url and title:
-                    # Fetch and parse content for each link
-                    content = self._fetch_page_content(result_url)
-                    results.append({
-                        'url': result_url,
-                        'title': title,
-                        'description': content[:150] + "...",  # Shorten description for display
-                        'timestamp': datetime.now().isoformat()
-                    })
-
-                # Add a delay to avoid triggering anti-bot measures
-                time.sleep(1)
+                progress_bar = st.progress(0)
+                for i, link in enumerate(links):
+                    title = link.get_text(strip=True)
+                    result_url = link.get('href')
+                    
+                    if result_url and title:
+                        content = self._fetch_page_content(result_url)
+                        results.append({
+                            'url': result_url,
+                            'title': title,
+                            'description': content[:150] + "...",
+                            'timestamp': datetime.now().isoformat()
+                        })
+                    progress_bar.progress((i + 1) / len(links))
+                    time.sleep(1)
 
         except Exception as e:
-            print(f"Error in DuckDuckGo Lite search: {e}")
+            st.error(f"Error in DuckDuckGo Lite search: {e}")
 
         return results
 
@@ -65,7 +61,7 @@ class SearchValidationSystem:
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
-            for element in soup(['script', 'style', 'nav', 'footer', 'header']):  # Clean unnecessary content
+            for element in soup(['script', 'style', 'nav', 'footer', 'header']):
                 element.decompose()
 
             main_content = soup.find('main') or soup.find('article') or soup.find('body')
@@ -76,18 +72,18 @@ class SearchValidationSystem:
             return ""
 
         except Exception as e:
-            print(f"Error fetching page content from {url}: {e}")
+            st.warning(f"Error fetching content from {url}: {e}")
             return ""
 
     def validate_with_llama(self, query: str, search_results: List[Dict]) -> Dict:
         """Validate search results using LLaMA through Groq."""
-        # Check if the search results contain content
         if not search_results:
             return {"error": "No valid search results to analyze"}
 
-        # Prepare context from search results
-        context = "\n".join([f"Source {i+1} ({result['url']}):\nTitle: {result['title']}\nDescription: {result['description']}\nContent: {result['description'][:200]}..."
-                            for i, result in enumerate(search_results)])
+        context = "\n".join([
+            f"Source {i+1} ({result['url']}):\nTitle: {result['title']}\nDescription: {result['description']}\nContent: {result['description'][:200]}..."
+            for i, result in enumerate(search_results)
+        ])
 
         prompt = f"""
         Query: {query}
@@ -111,21 +107,40 @@ class SearchValidationSystem:
         """
 
         try:
-            response = self.groq_client.chat.completions.create(
-                messages=[{
-                    "role": "user",
-                    "content": prompt
-                }],
-                model="llama-3.1-8b-instant",
-                temperature=0.3,
-                response_format={"type": "json_object"},
-                max_tokens=2048
-            )
-            content = response.choices[0].message.content
-            return json.loads(content) if content else {"error": "Empty response from LLaMA"}
+            with st.spinner('Validating information with LLaMA...'):
+                response = self.groq_client.chat.completions.create(
+                    messages=[{
+                        "role": "user",
+                        "content": prompt
+                    }],
+                    model="llama-3.1-8b-instant",
+                    temperature=0.3,
+                    response_format={"type": "json_object"},
+                    max_tokens=2048
+                )
+
+                if not response.choices or not response.choices[0].message.content:
+                    st.error("Empty response received from Groq API.")
+                    return {
+                        "summary": "Error in validation process",
+                        "validation": "Empty response from Groq API",
+                        "inconsistencies": [],
+                        "references": []
+                    }
+
+                try:
+                    return json.loads(response.choices[0].message.content)
+                except json.JSONDecodeError:
+                    st.error("Error decoding the JSON response from Groq.")
+                    return {
+                        "summary": "Error in validation process",
+                        "validation": "Invalid JSON response from Groq",
+                        "inconsistencies": [],
+                        "references": []
+                    }
 
         except Exception as e:
-            print(f"Error in LLaMA validation: {e}")
+            st.error(f"Error in LLaMA validation: {e}")
             return {
                 "summary": "Error in validation process",
                 "validation": str(e),
@@ -135,20 +150,16 @@ class SearchValidationSystem:
 
     def search_and_validate(self, query: str) -> Dict:
         """Main method to perform search and validation."""
-        # Check cache first
         if query in self.search_results_cache:
-            print("Using cached results...")
+            st.info("Using cached results...")
             return self.search_results_cache[query]
 
-        # Fetch new results
         search_results = self.fetch_duckduckgo_lite_results(query)
         if not search_results:
             return {"error": "No search results found"}
 
-        # Validate with LLaMA
         validation_results = self.validate_with_llama(query, search_results)
         
-        # Combine results
         final_results = {
             "query": query,
             "timestamp": datetime.now().isoformat(),
@@ -156,55 +167,87 @@ class SearchValidationSystem:
             "validation": validation_results
         }
 
-        # Cache results
         self.search_results_cache[query] = final_results
         return final_results
 
-
 def main():
-    # Initialize Streamlit app UI
-    system = SearchValidationSystem()
+    st.set_page_config(
+        page_title="Search Validation System",
+        page_icon="🔍",
+        layout="wide"
+    )
 
-    st.title("Search and Validation System")
-    query = st.text_input("Enter search query:", value="US Election 2024")
+    st.title("🔍 Search Validation System")
+    st.markdown("""
+    This app fetches search results and validates them using LLaMA AI model.
+    Enter your query below to get started!
+    """)
 
-    if st.button("Search and Validate"):
-        if not query:
-            st.error("Please enter a search query.")
-        else:
+    # Sidebar for API key
+    with st.sidebar:
+        st.header("Configuration")
+        groq_api_key = st.text_input("Enter Groq API Key:", type="password")
+        num_results = st.slider("Number of search results:", min_value=3, max_value=10, value=5)
+        st.markdown("---")
+        st.markdown("### About")
+        st.markdown("""
+        This app combines DuckDuckGo search with LLaMA validation through Groq's API
+        to provide verified information with cross-referenced sources.
+        """)
+
+    # Main interface
+    query = st.text_input("Enter your search query:", key="search_query")
+
+    if query and groq_api_key:
+        system = SearchValidationSystem(groq_api_key)
+        
+        try:
             results = system.search_and_validate(query)
-
+            
             if "error" in results:
-                st.error(results["error"])
+                st.error(f"Error: {results['error']}")
             else:
-                st.subheader(f"Results for: {results['query']}")
-                st.write(f"Timestamp: {results['timestamp']}")
-
-                st.subheader("Search Results:")
-                for i, result in enumerate(results['search_results'], 1):
-                    st.write(f"{i}. **{result['title']}**")
-                    st.write(f"   URL: {result['url']}")
-                    st.write(f"   Description: {result['description']}")
-                    st.write(f"   Timestamp: {result['timestamp']}\n")
-
-                st.subheader("Validation Results:")
-                validation = results['validation']
-                st.write("Summary:")
-                st.write(f"  {validation['summary']}")
-                st.write("Validation Details:")
-                st.write(f"  {validation['validation']}")
+                # Display results in tabs
+                tab1, tab2 = st.tabs(["Search Results", "Validation"])
                 
-                if validation['inconsistencies']:
-                    st.write("Inconsistencies Found:")
-                    for inconsistency in validation['inconsistencies']:
-                        st.write(f"  - {inconsistency}")
+                with tab1:
+                    st.subheader("Search Results")
+                    for i, result in enumerate(results['search_results'], 1):
+                        with st.expander(f"{i}. {result['title']}", expanded=True):
+                            st.write(f"**URL:** {result['url']}")
+                            st.write(f"**Description:** {result['description']}")
+                            st.write(f"**Timestamp:** {result['timestamp']}")
+                
+                with tab2:
+                    st.subheader("Validation Results")
+                    validation = results['validation']
+                    if 'error' in validation:
+                        st.error(f"Validation Error: {validation['error']}")
+                    else:
+                        st.markdown("### Summary")
+                        st.write(validation['summary'])
+                        
+                        st.markdown("### Validation Details")
+                        st.write(validation['validation'])
+                        
+                        if validation['inconsistencies']:
+                            st.markdown("### Inconsistencies Found")
+                            for inconsistency in validation['inconsistencies']:
+                                st.warning(f"- {inconsistency}")
+                        
+                        if validation['references']:
+                            st.markdown("### References")
+                            for ref in validation['references']:
+                                st.markdown(f"- {ref}")
 
-                if validation['references']:
-                    st.write("References:")
-                    for ref in validation['references']:
-                        st.write(f"  - {ref}")
-
+        except Exception as e:
+            st.error(f"An error occurred: {str(e)}")
+    
+    elif query:
+        st.warning("Please enter your Groq API key in the sidebar to proceed.")
+    
+    st.markdown("---")
+    st.markdown("Made with ❤️ using Streamlit, DuckDuckGo, and LLaMA")
 
 if __name__ == "__main__":
     main()
-
