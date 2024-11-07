@@ -8,9 +8,9 @@ from typing import List, Dict
 from groq import Groq
 
 class SearchValidationSystem:
-    def __init__(self, groq_api_key: str):
-        """Initialize the system with Groq API key."""
-        self.groq_client = Groq(api_key=groq_api_key)
+    def __init__(self):
+        """Initialize the system with Groq API key directly."""
+        self.groq_client = Groq(api_key="YOUR_GROQ_API_KEY")  # Replace with your Groq API key
         self.search_results_cache = {}
 
     def fetch_duckduckgo_lite_results(self, query: str, num_results: int = 5) -> List[Dict]:
@@ -80,59 +80,58 @@ class SearchValidationSystem:
             return ""
 
     def validate_with_llama(self, query: str, search_results: List[Dict]) -> Dict:
-    """Validate search results using LLaMA through Groq."""
-    # Check if the search results contain content
-    if not search_results:
-        return {"error": "No valid search results to analyze"}
+        """Validate search results using LLaMA through Groq."""
+        # Check if the search results contain content
+        if not search_results:
+            return {"error": "No valid search results to analyze"}
 
-    # Prepare context from search results
-    context = "\n".join([f"Source {i+1} ({result['url']}):\nTitle: {result['title']}\nDescription: {result['description']}\nContent: {result['description'][:200]}..."
-                        for i, result in enumerate(search_results)])
+        # Prepare context from search results
+        context = "\n".join([f"Source {i+1} ({result['url']}):\nTitle: {result['title']}\nDescription: {result['description']}\nContent: {result['description'][:200]}..."
+                            for i, result in enumerate(search_results)])
 
-    prompt = f"""
-    Query: {query}
-    
-    Context from multiple sources:
-    {context}
-    
-    Please analyze the above information and provide:
-    1. A summary of the key findings
-    2. Validation of the information across sources
-    3. Any inconsistencies or contradictions
-    4. List of reliable reference links
-    
-    Format your response as JSON with the following structure:
-    {{
-        "summary": "key findings",
-        "validation": "analysis of information validity",
-        "inconsistencies": ["list of any contradictions"],
-        "references": ["list of verified urls"]
-    }}
-    """
+        prompt = f"""
+        Query: {query}
+        
+        Context from multiple sources:
+        {context}
+        
+        Please analyze the above information and provide:
+        1. A summary of the key findings
+        2. Validation of the information across sources
+        3. Any inconsistencies or contradictions
+        4. List of reliable reference links
+        
+        Format your response as JSON with the following structure:
+        {{
+            "summary": "key findings",
+            "validation": "analysis of information validity",
+            "inconsistencies": ["list of any contradictions"],
+            "references": ["list of verified urls"]
+        }}
+        """
 
-    try:
-        response = self.groq_client.chat.completions.create(
-            messages=[{
-                "role": "user",
-                "content": prompt
-            }],
-            model="llama-3.1-8b-instant",
-            temperature=0.3,
-            response_format={"type": "json_object"},
-            max_tokens=2048
-            
-        )
-        content = response.choices[0].message.content
-        return json.loads(content) if content else {"error": "Empty response from LLaMA"}
+        try:
+            response = self.groq_client.chat.completions.create(
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }],
+                model="llama-3.1-8b-instant",
+                temperature=0.3,
+                response_format={"type": "json_object"},
+                max_tokens=2048
+            )
+            content = response.choices[0].message.content
+            return json.loads(content) if content else {"error": "Empty response from LLaMA"}
 
-    except Exception as e:
-        print(f"Error in LLaMA validation: {e}")
-        return {
-            "summary": "Error in validation process",
-            "validation": str(e),
-            "inconsistencies": [],
-            "references": []
-        }
+        except Exception as e:
+            print(f"Error in LLaMA validation: {e}")
+            return {
+                "summary": "Error in validation process",
+                "validation": str(e),
+                "inconsistencies": [],
+                "references": []
+            }
 
     def search_and_validate(self, query: str) -> Dict:
         """Main method to perform search and validation."""
@@ -163,17 +162,14 @@ class SearchValidationSystem:
 
 
 def main():
-    # Initialize Groq API key and Streamlit app UI
-    groq_api_key = st.text_input("Enter your Groq API key", type="password")
-    system = SearchValidationSystem(groq_api_key)
+    # Initialize Streamlit app UI
+    system = SearchValidationSystem()
 
     st.title("Search and Validation System")
     query = st.text_input("Enter search query:", value="US Election 2024")
 
     if st.button("Search and Validate"):
-        if not groq_api_key:
-            st.error("Please provide your Groq API key.")
-        elif not query:
+        if not query:
             st.error("Please enter a search query.")
         else:
             results = system.search_and_validate(query)
@@ -193,24 +189,22 @@ def main():
 
                 st.subheader("Validation Results:")
                 validation = results['validation']
-                if 'error' in validation:
-                    st.error(f"Validation Error: {validation['error']}")
-                else:
-                    st.write("Summary:")
-                    st.write(f"  {validation['summary']}")
-                    st.write("Validation Details:")
-                    st.write(f"  {validation['validation']}")
-                    
-                    if validation['inconsistencies']:
-                        st.write("Inconsistencies Found:")
-                        for inconsistency in validation['inconsistencies']:
-                            st.write(f"  - {inconsistency}")
+                st.write("Summary:")
+                st.write(f"  {validation['summary']}")
+                st.write("Validation Details:")
+                st.write(f"  {validation['validation']}")
+                
+                if validation['inconsistencies']:
+                    st.write("Inconsistencies Found:")
+                    for inconsistency in validation['inconsistencies']:
+                        st.write(f"  - {inconsistency}")
 
-                    if validation['references']:
-                        st.write("References:")
-                        for ref in validation['references']:
-                            st.write(f"  - {ref}")
+                if validation['references']:
+                    st.write("References:")
+                    for ref in validation['references']:
+                        st.write(f"  - {ref}")
 
 
 if __name__ == "__main__":
     main()
+
