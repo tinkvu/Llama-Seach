@@ -80,55 +80,59 @@ class SearchValidationSystem:
             return ""
 
     def validate_with_llama(self, query: str, search_results: List[Dict]) -> Dict:
-        """Validate search results using LLaMA through Groq."""
-        # Check if the search results contain content
-        if not search_results:
-            return {"error": "No valid search results to analyze"}
+    """Validate search results using LLaMA through Groq."""
+    # Check if the search results contain content
+    if not search_results:
+        return {"error": "No valid search results to analyze"}
 
-        # Prepare context from search results
-        context = "\n".join([f"Source {i+1} ({result['url']}):\nTitle: {result['title']}\nDescription: {result['description']}\nContent: {result['description'][:200]}..."
-                             for i, result in enumerate(search_results)])
+    # Prepare context from search results
+    context = "\n".join([f"Source {i+1} ({result['url']}):\nTitle: {result['title']}\nDescription: {result['description']}\nContent: {result['description'][:200]}..."
+                        for i, result in enumerate(search_results)])
 
-        prompt = f"""
-        Query: {query}
-        
-        Context from multiple sources:
-        {context}
-        
-        Please analyze the above information and provide:
-        1. A summary of the key findings
-        2. Validation of the information across sources
-        3. Any inconsistencies or contradictions
-        4. List of reliable reference links
-        
-        Format your response as JSON with the following structure:
-        {{
-            "summary": "key findings",
-            "validation": "analysis of information validity",
-            "inconsistencies": ["list of any contradictions"],
-            "references": ["list of verified urls"]
-        }}
-        """
+    prompt = f"""
+    Query: {query}
+    
+    Context from multiple sources:
+    {context}
+    
+    Please analyze the above information and provide:
+    1. A summary of the key findings
+    2. Validation of the information across sources
+    3. Any inconsistencies or contradictions
+    4. List of reliable reference links
+    
+    Format your response as JSON with the following structure:
+    {{
+        "summary": "key findings",
+        "validation": "analysis of information validity",
+        "inconsistencies": ["list of any contradictions"],
+        "references": ["list of verified urls"]
+    }}
+    """
 
-        try:
-            response = self.groq_client.chat.completions.create(
-                messages=[{
-                    "role": "user",
-                    "content": prompt
-                }],
-                model="llama-3.1-8b-instant",
-                temperature=0.3,
-                max_tokens=2048
-            )
-            return json.loads(response.choices[0].message.content)
-        except Exception as e:
-            print(f"Error in LLaMA validation: {e}")
-            return {
-                "summary": "Error in validation process",
-                "validation": str(e),
-                "inconsistencies": [],
-                "references": []
-            }
+    try:
+        response = self.groq_client.chat.completions.create(
+            messages=[{
+                "role": "user",
+                "content": prompt
+            }],
+            model="llama-3.1-8b-instant",
+            temperature=0.3,
+            response_format={"type": "json_object"},
+            max_tokens=2048
+            
+        )
+        content = response.choices[0].message.content
+        return json.loads(content) if content else {"error": "Empty response from LLaMA"}
+
+    except Exception as e:
+        print(f"Error in LLaMA validation: {e}")
+        return {
+            "summary": "Error in validation process",
+            "validation": str(e),
+            "inconsistencies": [],
+            "references": []
+        }
 
     def search_and_validate(self, query: str) -> Dict:
         """Main method to perform search and validation."""
